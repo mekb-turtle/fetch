@@ -1,5 +1,4 @@
 #!/bin/bash
-
 true
 
 if $(return >/dev/null 2>&1); then
@@ -9,12 +8,14 @@ if $(return >/dev/null 2>&1); then
 fi
 
 # configuration
-LINES=(user_at_host user_at_host_line distro uptime shell desktop empty palette)
+LINES=(user_at_host user_at_host_line distro:Distro uptime:Uptime shell:Shell desktop:Desktop empty palette)
 COLORS=1
+NERD_FONTS=3 # 0 = disabled, 1 = before key, 2 = after key, 3 = before value, 4 = after value
 COLOR_KEY=$'\x1b[38;5;15m'
 COLOR_SEPARATOR=$'\x1b[38;5;7m'
 COLOR_AT=$'\x1b[38;5;6m'
 COLOR_VALUE=$'\x1b[38;5;14m'
+COLOR_NERD=$'\x1b[38;5;14m'
 COLOR_LINE=$'\x1b[38;5;7m'
 COLOR_RESET=$'\x1b[0m'
 PALETTE_CHARACTER=$'\x1b[38;5;%im󱓻\x1b[0m '
@@ -22,11 +23,16 @@ LINE="-"
 AT="@"
 SEPARATOR=": "
 ALIGN_SEPARATORS=0
+NERD_FONTS_DISTRO=("Linux Mint:󰣭 " "Kali Linux: " "Alpine Linux: " "Arch Linux: " "Artix Linux: " "Debian*: " "Devuan: " "Gentoo Linux: " "Fedora Linux: " "CentOS: " "elementary OS*: " "EndeavourOS: " "Manjaro Linux: " "NixOS: " "openSUSE*: " "Solus: " "Ubuntu: " "Void Linux: " "Zorin OS: ")
+NERD_FONTS_DESKTOP=() #TODO
 
 # stuff for printing
 unset current_username
 unset current_shell
 unset current_hostname
+unset current_os_id
+unset current_os_name
+unset current_os_pretty_name
 KEY_LINES=()
 VALUE_LINES=()
 SEPARATOR_LINES=()
@@ -39,6 +45,7 @@ if [[ "$COLORS" != "1" ]]; then
 	COLOR_SEPARATOR=
 	COLOR_AT=
 	COLOR_VALUE=
+	COLOR_NERD=
 	COLOR_LINE=
 	COLOR_RESET=
 fi
@@ -46,8 +53,7 @@ fi
 # repeats a string until it reaches a length
 function repeat_pattern(){
 	local str=""
-	local j
-	local i
+	local j i
 	for (( i=0, j=0; i<"$2"; i++, j++ )); do
 		[[ "$j" -ge "${#1}" ]] && j=0
 		printf "%s" "${1:$j:1}"
@@ -105,8 +111,7 @@ function info_pad(){
 # print all lines
 function print(){
 	IFS=' '
-	local i
-	local padding
+	local i padding
 	for ((i=0; i<"${#KEY_LINES[@]}"; i++)); do
 		padding="$(("${MAX_PADDING}"-"${KEY_LEN_LINES[$i]}"))" # set padding to max length of keys subtracted by the length of this key
 		[[ -n "${PAD_LINES[$i]}" ]] && padding="${PAD_LINES[$i]}" # if custom padding is set, use that instead
@@ -115,19 +120,71 @@ function print(){
 	done
 }
 
-# gets distro from /etc/os-release
-function line_distro(){
+# parse /etc/os-release
+function parse_os_release(){
+	[[ -n "$current_os_id" && -n "$current_os_name" && -n "$current_os_pretty_name" ]] && return 0
+	unset release_ID release_NAME release_PRETTY_NAME
 	local key val
 	while IFS='=' read -r key val; do
 		[[ "$key" == '"'*'"' || "$key" == "'"*"'" ]] && key="${key:1:-1}"
 		[[ "$val" == '"'*'"' || "$val" == "'"*"'" ]] && val="${val:1:-1}"
 		local "release_$key"="$val"
 	done < /etc/os-release || return 1
+	current_os_id="$release_ID"
+	current_os_name="$release_NAME"
+	current_os_pretty_name="$release_PRETTY_NAME"
+}
+
+# get if string matches in nerd font array
+function nerd_match(){
+	local match icon
+	IFS=":" read -r match icon <<< "$2"
+	if [[ "$match" == *"*" && "$1" == "${match%"*"}"* ]] || \
+		[[ "$match" == "*"* && "$1" == *"${match#"*"}" ]] || \
+		[[ "$1" == "$match" ]]; then
+		printf "%s" "$icon"
+		return 0
+	fi
+	return 1
+}
+
+# gets distro from /etc/os-release
+function line_distro(){
+	parse_os_release
 	local name=""
-	[[ -n "$release_ID" ]] && name="$release_ID"
-	[[ -n "$release_NAME" ]] && name="$release_NAME"
-	[[ -n "$release_PRETTY_NAME" ]] && name="$release_PRETTY_NAME"
-	"$1" distro "$name"
+	[[ -n "$current_os_id" ]] && name="$current_os_id"
+	[[ -n "$current_os_name" ]] && name="$current_os_name"
+	[[ -n "$current_os_pretty_name" ]] && name="$current_os_pretty_name"
+
+	# nerd fonts
+	if [[ "$NERD_FONTS" != "0" ]]; then
+		local i match
+		for i in "${NERD_FONTS_DISTRO[@]}"; do
+			match="$(nerd_match "$current_os_id" "$i" || nerd_match "$current_os_name" "$i" || nerd_match "$current_os_pretty_name" "$i")"
+			if [[ -n "$match" ]]; then
+				case "$NERD_FONTS" in
+					1)
+						"$1" "${match}$2" "$name"
+						;;
+					2)
+						"$1" "$2 $match" "$name"
+						;;
+					3)
+						"$1" "$2" "$match$name"
+						;;
+					4)
+						"$1" "$2" "$name $match"
+						;;
+					*)
+						echo e
+						break
+				esac
+				return 0
+			fi
+		done
+	fi
+
+	"$1" "$2" "$name"
 }
 
 # gets user information
@@ -175,20 +232,20 @@ function get_hostname(){
 # gets username
 function line_user(){
 	get_user
-	"$1" user "$current_username"
+	"$1" "$2" "$current_username"
 }
 
 # gets hostname
 function line_host(){
 	get_hostname
-	"$1" host "$current_hostname"
+	"$1" "$2" "$current_hostname"
 }
 
 # gets system uptime
-# gets system uptime
 function line_uptime(){
+	local uptime
 	IFS=' ' read -r uptime _ < /proc/uptime
-	"$1" uptime "$(format_duration "$uptime")"
+	"$1" "$2" "$(format_duration "$uptime")"
 }
 
 # gets the username with hostname
@@ -210,7 +267,7 @@ function base() {
 # gets the user's shell
 function line_shell(){
 	get_user
-	"$1" shell "$(base "${current_shell}")"
+	"$1" "$2" "$(base "${current_shell}")"
 }
 
 # gets the desktop environment or window manager
@@ -228,7 +285,7 @@ function line_desktop(){
 		[[ "$de" == *xfce* ]] && de=Xfce
 		[[ "$de" == *KDE_SESSION* ]] && de=KDE
 	fi
-	"$1" desktop "$de"
+	"$1" "$2" "$de"
 }
 
 # draw color palette
@@ -251,13 +308,18 @@ function main(){
 			info ""
 		else
 			local info_func=info
+			local name="$line"
 			if [[ "$line" == *"_line" ]]; then
 				line="${line%_line}"
 				info_func=info_line
+			elif [[ "$line" == *":"* ]]; then
+				IFS=":" read -r line name <<< "$line"
 			fi
+
 			line="line_$line"
+
 			if [[ "$(type -t "$line")" == function ]]; then
-				"$line" "$info_func"
+				"$line" "$info_func" "$name"
 			else
 				echo "Unknown info line: $line"
 			fi

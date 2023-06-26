@@ -1,0 +1,270 @@
+#!/bin/bash
+
+true
+
+if $(return >/dev/null 2>&1); then
+	# script was sourced, run it as bash instead
+	"${BASH_SOURCE[0]}" "$@"
+	return "$?"
+fi
+
+# configuration
+LINES=(user_at_host user_at_host_line distro uptime shell desktop empty palette)
+COLORS=1
+COLOR_KEY=$'\x1b[38;5;15m'
+COLOR_SEPARATOR=$'\x1b[38;5;7m'
+COLOR_AT=$'\x1b[38;5;6m'
+COLOR_VALUE=$'\x1b[38;5;14m'
+COLOR_LINE=$'\x1b[38;5;7m'
+COLOR_RESET=$'\x1b[0m'
+PALETTE_CHARACTER=$'\x1b[38;5;%im󱓻\x1b[0m '
+LINE="-"
+AT="@"
+SEPARATOR=": "
+ALIGN_SEPARATORS=0
+
+# stuff for printing
+unset current_username
+unset current_shell
+unset current_hostname
+KEY_LINES=()
+VALUE_LINES=()
+SEPARATOR_LINES=()
+PAD_LINES=()
+MAX_PADDING=0
+
+# clear colors if colors were disabled
+if [[ "$COLORS" != "1" ]]; then
+	COLOR_KEY=
+	COLOR_SEPARATOR=
+	COLOR_AT=
+	COLOR_VALUE=
+	COLOR_LINE=
+	COLOR_RESET=
+fi
+
+# repeats a string until it reaches a length
+function repeat_pattern(){
+	local str=""
+	local j
+	local i
+	for (( i=0, j=0; i<"$2"; i++, j++ )); do
+		[[ "$j" -ge "${#1}" ]] && j=0
+		printf "%s" "${1:$j:1}"
+	done
+}
+
+# adds a piece of information to the output
+function info(){
+	KEY_LINES+=("${5-"$COLOR_KEY"}$1${COLOR_RESET}")
+	VALUE_LINES+=("${7-"$COLOR_VALUE"}$2${COLOR_RESET}")
+
+	# separator
+	local s="${3-"$SEPARATOR"}"
+	# if the value is blank, we don't need a separator
+	if [[ -z "$2" ]]; then s=""
+	# if the key is blank, make enough spaces so it still lines up
+	elif [[ -z "$1" ]]; then s="$(printf "%*s" "${#SEPARATOR}" "")"; fi
+	SEPARATOR_LINES+=("${6-"$COLOR_SEPARATOR"}${s}${COLOR_RESET}")
+
+	info_pad "$@"
+}
+
+# above but draws it as a line instead
+function info_line(){
+	KEY_LINES+=("$COLOR_LINE$(repeat_pattern "$LINE" "${#1}")")
+	VALUE_LINES+=("$COLOR_LINE$(repeat_pattern "$LINE" "${#2}")")
+
+	# separator
+	if [[ -z "$2" ]]; then
+		# if the value is blank, we don't need a separator
+		SEPARATOR_LINES+=()
+	elif [[ -z "$1" ]]; then
+		# if the key is blank, make enough spaces so it still lines up
+		SEPARATOR_LINES+=("$(printf "%*s" "${#SEPARATOR}" "")")
+	else
+		# if both the key and the value aren't blank, set the separator to lines
+		local s="${3-"$SEPARATOR"}"
+		SEPARATOR_LINES+=("${8-"$COLOR_LINE"}$(repeat_pattern "$LINE" "${#s}")${COLOR_RESET}")
+	fi
+
+	info_pad "$@"
+}
+
+# calculate how many spaces to pad left so the separators line up
+function info_pad(){
+	if [[ -z "$4" ]]; then
+		if [[ "$ALIGN_SEPARATORS" == "1" ]]; then
+			[[ "${#1}" -gt "$MAX_PADDING" ]] && MAX_PADDING="${#1}"
+		fi
+	fi
+	KEY_LEN_LINES+=("${#1}")
+	PAD_LINES+=("$4")
+}
+
+# print all lines
+function print(){
+	IFS=' '
+	local i
+	local padding
+	for ((i=0; i<"${#KEY_LINES[@]}"; i++)); do
+		padding="$(("${MAX_PADDING}"-"${KEY_LEN_LINES[$i]}"))" # set padding to max length of keys subtracted by the length of this key
+		[[ -n "${PAD_LINES[$i]}" ]] && padding="${PAD_LINES[$i]}" # if custom padding is set, use that instead
+		[[ "$padding" -lt 0 ]] && padding=0 # prevent negative values
+		printf "%*s%s%s%s\n" "$padding" "" "${KEY_LINES[$i]}" "${SEPARATOR_LINES[$i]}" "${VALUE_LINES[$i]}"
+	done
+}
+
+# gets distro from /etc/os-release
+function line_distro(){
+	local key val
+	while IFS='=' read -r key val; do
+		[[ "$key" == '"'*'"' || "$key" == "'"*"'" ]] && key="${key:1:-1}"
+		[[ "$val" == '"'*'"' || "$val" == "'"*"'" ]] && val="${val:1:-1}"
+		local "release_$key"="$val"
+	done < /etc/os-release || return 1
+	local name=""
+	[[ -n "$release_ID" ]] && name="$release_ID"
+	[[ -n "$release_NAME" ]] && name="$release_NAME"
+	[[ -n "$release_PRETTY_NAME" ]] && name="$release_PRETTY_NAME"
+	"$1" distro "$name"
+}
+
+# gets user information
+function get_user(){
+	local line username _passwd uid _gid _desc _homedir shell
+	[[ -n "$current_username" && -n "$current_shell" ]] && return 0
+	while IFS=$'\n' read -r line; do
+		# read line in passwd
+		IFS=':' read -r username _passwd uid _gid _desc _homedir shell <<< "$line" || continue
+		if [[ "$uid" == "$UID" ]]; then
+			current_username="$username"
+			current_shell="$shell"
+			return 0
+		fi
+	done < /etc/passwd
+	return 1
+}
+
+# formats seconds into human readable, e.g 3281938 becomes 5w 2d 23h 38m 58s
+function format_duration(){
+	local t
+	t="$(printf "%.0f" "$1")"
+	local w="$((t/604800))"
+	t="$((t%604800))"
+	local d="$((t/86400))"
+	t="$((t%86400))"
+	local h="$((t/3600))"
+	t="$((t%3600))"
+	local m="$((t/60))"
+	local s="$((t%60))"
+	local str="${s}s"
+	[[ "$m" -gt 0 ]] && str="${m}m $str"
+	[[ "$h" -gt 0 ]] && str="${h}h $str"
+	[[ "$d" -gt 0 ]] && str="${d}d $str"
+	[[ "$w" -gt 0 ]] && str="${w}w $str"
+	printf "%s" "$str"
+}
+
+# gets system hostname
+function get_hostname(){
+	[[ -n "$current_hostname" ]] && return 0
+	current_hostname="${HOSTNAME:-"$(</proc/sys/kernel/hostname)"}"
+}
+
+# gets username
+function line_user(){
+	get_user
+	"$1" user "$current_username"
+}
+
+# gets hostname
+function line_host(){
+	get_hostname
+	"$1" host "$current_hostname"
+}
+
+# gets system uptime
+# gets system uptime
+function line_uptime(){
+	IFS=' ' read -r uptime _ < /proc/uptime
+	"$1" uptime "$(format_duration "$uptime")"
+}
+
+# gets the username with hostname
+function line_user_at_host(){
+	get_user
+	get_hostname
+	"$1" "$current_username" "$current_hostname" "$AT" 0 "$COLOR_VALUE" "$COLOR_AT" "$COLOR_VALUE"
+}
+
+# alternative to basename
+function base() {
+	local dir
+    dir="${1%"${1##*[!/]}"}"
+    dir="${dir##*/}"
+    dir="${dir%"$2"}"
+    printf '%s\n' "${dir:-/}"
+}
+
+# gets the user's shell
+function line_shell(){
+	get_user
+	"$1" shell "$(base "${current_shell}")"
+}
+
+# gets the desktop environment or window manager
+function line_desktop(){
+	local de
+	if [[ -n "$GNOME_DESKTOP_SESSION_ID" ]]; then
+		de=GNOME
+	elif [[ -n "$MATE_DESKTOP_SESSION_ID" ]]; then
+		de=MATE
+	elif [[ -n "$TDE_FULL_SESSION" ]]; then
+		de=Trinity
+	else
+		de="${XDG_CURRENT_DESKTOP:-"$DESKTOP_SESSION"}"
+		[[ "$de" == "mate" ]] && de=MATE
+		[[ "$de" == *xfce* ]] && de=Xfce
+		[[ "$de" == *KDE_SESSION* ]] && de=KDE
+	fi
+	"$1" desktop "$de"
+}
+
+# draw color palette
+function line_palette(){
+	local i
+	for i in 0 1; do
+		local s=""
+		for j in 0 1 2 3 4 5 6 7; do
+			s="$s$(printf "$PALETTE_CHARACTER" "$((i*8+j))")"
+		done
+		"$1" "$s" "" "" 0
+	done
+}
+
+# parse LINES array
+function main(){
+	local line
+	for line in "${LINES[@]}"; do
+		if [[ "$line" == "empty" ]]; then
+			info ""
+		else
+			local info_func=info
+			if [[ "$line" == *"_line" ]]; then
+				line="${line%_line}"
+				info_func=info_line
+			fi
+			line="line_$line"
+			if [[ "$(type -t "$line")" == function ]]; then
+				"$line" "$info_func"
+			else
+				echo "Unknown info line: $line"
+			fi
+		fi
+	done
+	print
+}
+
+main
+

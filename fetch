@@ -8,7 +8,7 @@ if $(return >/dev/null 2>&1); then
 fi
 
 # configuration
-LINES=(user_at_host user_at_host_line distro:Distro uptime:Uptime shell:Shell desktop:Desktop empty palette)
+LINES=(user_at_host user_at_host_line distro:Distro uptime:Uptime shell:Shell desktop:Desktop memory:Memory empty palette)
 COLORS=1
 NERD_FONTS=3 # 0 = disabled, 1 = before key, 2 = after key, 3 = before value, 4 = after value
 COLOR_KEY=$'\x1b[38;5;15m'
@@ -223,10 +223,79 @@ function format_duration(){
 	printf "%s" "$str"
 }
 
+# formats bytes into human readable, e.g 5368709120 becomes 5G
+function format_bytes(){
+	local bytes="$((100*$1))"
+	local bytes_dec=""
+	local prefix_index=0
+	local prefix=(" bytes" "K" "M" "G" "T" "P" "E" "Z" "Y")
+	if [[ "$bytes" -lt 100 ]]; then
+		printf "%s" "0.$bytes${prefix[0]}"
+		return 0
+	fi
+	while [[ "$bytes" -ge 102400 ]]; do
+		bytes="$((bytes/1024))"
+		prefix_index="$((prefix_index+1))"
+	done
+	for (( i=0; i<2; i++ )); do
+		bytes_dec="${bytes:0-1}$bytes_dec"
+		bytes="${bytes::-1}"
+	done
+	[[ "$prefix_index" == 0 ]] && bytes_dec=""
+	while [[ "${bytes_dec:0-1}" == "0" ]]; do bytes_dec="${bytes_dec::-1}"; done
+	[[ "${#bytes_dec}" -gt 0 ]] && bytes_dec=".$bytes_dec"
+	printf "%s" "${bytes}${bytes_dec}${prefix["$prefix_index"]}"
+}
+
 # gets system hostname
 function get_hostname(){
 	[[ -n "$current_hostname" ]] && return 0
 	current_hostname="${HOSTNAME:-"$(</proc/sys/kernel/hostname)"}"
+}
+
+# gets memory used and total
+function line_memory(){
+	line_memory_ "$1" "$2"
+}
+function line_memory_percent(){
+	line_memory_ "$1" "$2" "1"
+}
+function line_memory_(){
+	[[ -n "$current_memory_total" && -n "$current_memory_free" && -n "$current_memory_available" && -n "$current_swap_total" && -n "$current_swap_free" && -n "$current_swap_cached" ]] && return 0
+	local key val num dec i percent percent_dec mem_total mem_available mem_used
+	mem_not_used=0
+	while IFS=':' read -r key val; do
+		num="$(("${val//[^0-9\.-]/}" * 1024))"
+		case "$key" in
+			MemTotal)
+				mem_total="$(("${val//[^0-9]/}"*1024))"
+				mem_used="$((mem_used + num))" ;;
+			Shmem)
+				mem_used="$((mem_used + num))" ;;
+			MemFree|Buffers|Cached|SReclaimable)
+				mem_used="$((mem_used - num))" ;;
+			MemAvailable)
+				mem_available="$(("${val//[^0-9]/}"*1024))" ;;
+			*)
+				;;
+		esac
+	done < /proc/meminfo || return 1
+	dec=1
+	percent="$((mem_used * (10 ** (2 + dec)) / mem_total))"
+	percent_dec=""
+	while [[ "${#percent}" -lt "$((dec + 10))" ]]; do percent="0$percent"; done
+	for (( i=0; i<"$dec"; i++ )); do
+		percent_dec="${percent:0-1}$percent_dec"
+		percent="${percent::-1}"
+	done
+	while [[ "${percent_dec:0-1}" == "0" ]]; do percent_dec="${percent_dec::-1}"; done
+	while [[ "${percent::1}" == "0" ]]; do percent="${percent:1}"; done
+	[[ "${#percent_dec}" -gt 0 ]] && percent_dec=".$percent_dec"
+	if [[ "$3" == "1" ]]; then
+		"$1" "$2" "$percent$percent_dec%"
+	else
+		"$1" "$2" "$(format_bytes "$mem_used") / $(format_bytes "$mem_total")"
+	fi
 }
 
 # gets username
@@ -309,7 +378,14 @@ function main(){
 		else
 			local info_func=info
 			local name="$line"
-			if [[ "$line" == *"_line" ]]; then
+			if [[ "$line" == "line_"* ]]; then
+				local number
+				IFS="_" read -r _ number <<< "$line"
+				if [[ "$number" -eq "$number" ]]; then
+					info_line "$(printf "%*s" "$number")"
+					continue
+				fi
+			elif [[ "$line" == *"_line" ]]; then
 				line="${line%_line}"
 				info_func=info_line
 			elif [[ "$line" == *":"* ]]; then
